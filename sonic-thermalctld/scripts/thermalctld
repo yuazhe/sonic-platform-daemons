@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from datetime import datetime
+import argparse
 
 import sonic_platform
 from sonic_py_common import daemon_base, logger
@@ -435,6 +436,46 @@ class FanUpdater(logger.Logger):
                 ])
             self.drawer_table.set(drawer_name, fvs)
 
+class LiquidCoolingUpdater(logger.Logger):
+
+    def __init__(self, chassis):
+        """
+        Constructor for LiquidCoolingUpdater
+        :param chassis: Object representing a platform chassis
+        """
+        super(LiquidCoolingUpdater, self).__init__(SYSLOG_IDENTIFIER)
+
+        self.chassis = chassis
+        self.liquid_cooling = self.chassis.get_liquid_cooling()
+        self.table = None
+        self.task_stopping_event = None
+
+        state_db = daemon_base.db_connect("STATE_DB")
+        self.table = swsscommon.Table(state_db, LiquidCoolingUpdater.LIQUID_COOLING_DEVICE)
+
+        # Start a thread to monitor liquid cooling leak
+        self.update_thread = threading.Thread(target=self.update)
+        self.leak_monitor_thread.daemon = True
+        self.leak_monitor_thread.start()
+
+    def _refresh_leak_status():
+        sensors_detected_leak = self.liquid_cooling.get_leak_sensor_status() 
+        if sensors_detected_leak is not None:
+            update_entity_info(self.phy_entity_table, CHASSIS_INFO_KEY, drawer_name, fan_drawer, drawer_index)
+
+
+    def update(self):
+        """
+        Update all liquid cooling information to database
+        :return:
+        """
+        self.log_debug("Start liquid cooling updating")
+
+        self._refresh_leak_status()
+
+        self.log_debug("End liquid cooling updating")
+
+
 
 class TemperatureStatus(logger.Logger):
     TEMPERATURE_DIFF_THRESHOLD = 10
@@ -808,7 +849,7 @@ class ThermalControlDaemon(daemon_base.DaemonBase):
 
     POLICY_FILE = '/usr/share/sonic/platform/thermal_policy.json'
 
-    def __init__(self):
+    def __init__(self, enable_liquid_cooling=False):
         """
         Initializer of ThermalControlDaemon
         """
@@ -840,6 +881,8 @@ class ThermalControlDaemon(daemon_base.DaemonBase):
         except Exception as e:
             self.log_error('Caught exception while initializing thermal manager - {}'.format(repr(e)))
 
+        self.liquid_cooling = LiquidCooling(self.chassis) if enable_liquid_cooling else None
+
     def deinit(self):
         """
         Deinitializer of ThermalControlDaemon
@@ -851,6 +894,8 @@ class ThermalControlDaemon(daemon_base.DaemonBase):
             self.log_error('Caught exception while destroying thermal manager - {}'.format(repr(e)))
 
         self.thermal_monitor.task_stop()
+        if self.liquid_cooling:
+            self.liquid_cooling.task_stop()
 
     # Override signal handler from DaemonBase
     def signal_handler(self, sig, frame):
@@ -912,7 +957,12 @@ class ThermalControlDaemon(daemon_base.DaemonBase):
 # Main =========================================================================
 #
 def main():
-    thermal_control = ThermalControlDaemon()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--enable_liquid_cooling', action='store_true')
+
+    args = parser.parse_args()
+
+    thermal_control = ThermalControlDaemon(args.enable_liquid_cooling)
 
     thermal_control.log_info("Starting up...")
 
