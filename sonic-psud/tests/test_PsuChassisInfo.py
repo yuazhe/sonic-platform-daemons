@@ -28,6 +28,17 @@ sys.path.insert(0, mocked_libs_path)
 load_source('swsscommon', os.path.join(mocked_libs_path, 'swsscommon', 'swsscommon.py'))
 import swsscommon as mock_swsscommon
 
+# Patch Table.set so it accepts real swsscommon.FieldValuePairs (no .fv_dict) from production code
+_original_table_set = mock_swsscommon.Table.set
+def _patched_table_set(self, key, fvs):
+    if hasattr(fvs, 'fv_dict'):
+        return _original_table_set(self, key, fvs)
+    try:
+        self.mock_dict[key] = dict(fvs)
+    except (TypeError, ValueError):
+        self.mock_dict[key] = dict(list(fvs))
+mock_swsscommon.Table.set = _patched_table_set
+
 # Add path to the file under test so that we can load it
 modules_path = os.path.dirname(tests_path)
 scripts_path = os.path.join(modules_path, "scripts")

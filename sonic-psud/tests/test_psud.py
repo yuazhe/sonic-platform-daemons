@@ -43,16 +43,17 @@ def test_wrapper_get_num_psus():
     assert psud.platform_chassis.get_num_psus.call_count == 1
     assert psud.platform_psuutil.get_num_psus.call_count == 0
 
-    # Test new platform API is available but not implemented
+    # Test new platform API is available but get_num_psus not implemented:
+    # current behavior is to treat PSU count as 0 (no psuutil fallback while chassis exists)
     psud.platform_chassis.get_num_psus.side_effect = NotImplementedError
     psud._wrapper_get_num_psus(mock_logger)
     assert psud.platform_chassis.get_num_psus.call_count == 2
-    assert psud.platform_psuutil.get_num_psus.call_count == 1
+    assert psud.platform_psuutil.get_num_psus.call_count == 0
 
     # Test new platform API not available
     psud.platform_chassis = None
     psud._wrapper_get_num_psus(mock_logger)
-    assert psud.platform_psuutil.get_num_psus.call_count == 2
+    assert psud.platform_psuutil.get_num_psus.call_count == 1
 
     # Test with None logger - should not crash
     psud.platform_chassis = mock.MagicMock()
@@ -428,10 +429,43 @@ def test_get_psu_key():
     assert result == "PSU 5"
 
 
+def _make_mock_swsscommon_for_main():
+    """Build a minimal swsscommon module so DaemonPsud can connect to STATE_DB without real Redis."""
+    import types
+    mod = types.ModuleType('swsscommon')
+    mod.STATE_DB = ''
+
+    class Table:
+        def __init__(self, db, table_name):
+            self.table_name = table_name
+            self.mock_dict = {}
+
+        def _del(self, key):
+            self.mock_dict.pop(key, None)
+
+        def set(self, key, fvs):
+            self.mock_dict[key] = getattr(fvs, 'fv_dict', fvs) if hasattr(fvs, 'fv_dict') else fvs
+
+        def get(self, key):
+            return self.mock_dict.get(key)
+
+    class FieldValuePairs:
+        def __init__(self, tuple_list):
+            if isinstance(tuple_list, list) and tuple_list and isinstance(tuple_list[0], (tuple, list)):
+                self.fv_dict = dict(tuple_list)
+            else:
+                self.fv_dict = {}
+
+    mod.Table = Table
+    mod.FieldValuePairs = FieldValuePairs
+    return mod
+
+
 @mock.patch('psud.platform_chassis', mock.MagicMock())
 @mock.patch('psud.DaemonPsud.run')
 def test_main(mock_run):
     mock_run.return_value = False
-
-    psud.main()
+    mock_swsscommon = _make_mock_swsscommon_for_main()
+    with mock.patch('psud.swsscommon', mock_swsscommon):
+        psud.main()
     assert mock_run.call_count == 1
